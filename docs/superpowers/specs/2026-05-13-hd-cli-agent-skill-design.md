@@ -61,18 +61,23 @@ hd-cli-agent-skill/
   skills/
     hd-cli/
       SKILL.md
-      .local/
-        calculations.jsonl
+      .state/
+        index.md
+        calculations/
+          <calc-id>.md
         people/
-          <person-id>.json
-        charts/
-          <chart-id>.json
+          <person-id>/
+            person.md
+            charts/
+              <chart-id>.md
         dialogs/
-          <dialog-id>.json
-        artifacts/
-          <artifact-id>.json
+          <dialog-id>/
+            dialog.md
+            scratchpad.md
+            artifacts/
+              <artifact-id>.md
         notebooklm/
-          sources.json
+          sources.md
       scripts/
         install.sh
         install.ps1
@@ -94,23 +99,44 @@ hd-cli-agent-skill/
 - Симлинк/алиас на текущую версию:
   - `~/.cache/hd-cli/current/hd-cli[.exe]` (копия или симлинк, зависит от платформы)
 
-### 3.4. Персистентное хранение (локально в директории скилла)
-Требование: хранить данные персистентно локально в директории скилла.
+### 3.4. Персистентное хранение: структурированные каталоги Markdown + Context State (Session Cache)
+Требование: хранить данные персистентно локально в директории скилла в виде структурированных каталогов и Markdown-файлов. Для служебного состояния использовать паттерн “Context State / Session Cache / Scratchpad File”.
 
-- Local state root: `<skill_root>/skills/hd-cli/.local/`
-- Данные хранятся в JSON/JSONL, чтобы их можно было бэкапить, переносить и инспектировать.
-- Все записи содержат:
-  - `id` (строка UUID/slug)
-  - `created_at` (ISO 8601)
-  - `updated_at` (ISO 8601)
+- Local state root: `<skill_root>/skills/hd-cli/.state/`
+- Формат сущностей: Markdown с YAML frontmatter (метаданные) + секции контента.
+- Один диалог = один каталог `dialogs/<dialog-id>/`, где:
+  - `dialog.md` — “источник истины” (участники, ссылки на артефакты, базовые метаданные).
+  - `scratchpad.md` — файл кэша контекста (Session Cache), который обновляется агентом по ходу работы и хранит короткое рабочее состояние (например: `conversation_id`, состояние синхронизации source’ов, последнюю активную карту на участника, временные заметки для последующих шагов).
 
-Файлы:
-- `calculations.jsonl` — журнал всех расчётов (append-only).
-- `people/<person-id>.json` — сущность “человек”.
-- `charts/<chart-id>.json` — сохранённая “карта” (compact-версия без описательных полей).
-- `dialogs/<dialog-id>.json` — диалог, связанный с 1+ людьми/картами.
-- `artifacts/<artifact-id>.json` — артефакт диалога: вопрос пользователя + прикреплённые данные карт + ответ NotebookLM.
-- `notebooklm/sources.json` — маппинг локальных сущностей на NotebookLM sources (source-id, заголовок, контрольная сумма контента, время синхронизации).
+Индексы/каталоги:
+- `index.md` — обзор хранилища и быстрые ссылки (люди/последние диалоги/последние расчёты).
+- `calculations/<calc-id>.md` — запись одного расчёта (append-only концептуально; правки допустимы только для исправления метаданных).
+- `people/<person-id>/person.md` — сущность “человек”.
+- `people/<person-id>/charts/<chart-id>.md` — сохранённая “карта” (compact-версия без описательных полей).
+- `dialogs/<dialog-id>/artifacts/<artifact-id>.md` — артефакт диалога: вопрос пользователя + прикреплённые данные карт + ответ NotebookLM.
+- `notebooklm/sources.md` — маппинг локальных сущностей на NotebookLM sources (source-id, заголовок, контрольная сумма контента, время синхронизации).
+
+Рекомендованная структура YAML frontmatter (общая):
+- `id`
+- `created_at`
+- `updated_at`
+- `type` (person|chart|dialog|artifact|calculation|index|mapping)
+
+Рекомендованные секции Markdown:
+- `## Data` — данные сущности
+- `## Links` — ссылки на другие сущности
+- `## Notes` — заметки/интерпретации (если нужны)
+
+### 3.5. Вложение JSON в Markdown
+Требование: “данные карт пользователей … без текстовых описаний” должны прикрепляться к запросам и сохраняться в артефактах. При этом формат хранения — Markdown.
+
+Правило:
+- JSON “compact chart” хранить внутри Markdown в fenced-блоке:
+  - ```json
+    { ... }
+    ```
+- Ключевые метаданные вынести в frontmatter (id, ссылки, timestamps), сам JSON оставить в секции `## Data`.
+
 
 ## 4. Установщик: алгоритм
 
@@ -220,8 +246,8 @@ hd-cli-agent-skill/
   - `HD Chart: <display_name> (<person-id>)`
 - Контент source: JSON “compact chart” (см. раздел 5.4), возможно упакованный в один объект:
   - `{ "person": {...}, "chart": {...}, "chart_id": "...", "calculation": {...} }`
-- Локально сохранять маппинг в `.local/notebooklm/sources.json`:
-  - `person_id -> { source_id, title, content_sha256, updated_at }`
+- Локально сохранять маппинг в `.state/notebooklm/sources.md`:
+  - `person_id -> source_id`, `title`, `content_sha256`, `updated_at`
 
 ### 6.3. Диалоги и артефакты (локально)
 Сущности:
@@ -240,6 +266,7 @@ hd-cli-agent-skill/
 
 Поведение:
 - При новом вопросе в рамках диалога:
+  0) Обновлять `dialogs/<dialog-id>/scratchpad.md` как Session Cache (минимум: `conversation_id`, статус синхронизации sources, last_error).
   1) Убедиться, что все участники имеют актуальные sources в NotebookLM (создать/обновить при необходимости).
   2) Выполнить `nlm notebook query <notebook-id> "..."`:
      - Если у диалога уже есть `conversation_id` — передать его флагом `--conversation-id`.
@@ -258,9 +285,10 @@ hd-cli-agent-skill/
   - Skill сообщает причину и предлагает локальную установку из `nimblemo/Human-Design-cli`.
 - Поддержаны оба режима (structured + raw).
 - Персистентно сохраняются:
-  - список расчётов (calculations.jsonl)
-  - люди/карты
-  - диалоги и артефакты диалогов с прикреплёнными compact-данными карт
+  - список расчётов (Markdown файлы в `.state/calculations/`)
+  - люди/карты (Markdown каталоги в `.state/people/`)
+  - диалоги и артефакты (Markdown каталоги в `.state/dialogs/`)
+  - context cache (Session Cache) в `dialogs/<dialog-id>/scratchpad.md`
 - NotebookLM интеграция:
   - источники (sources) создаются/обновляются на человека
   - запросы выполняются через `nlm notebook query` в указанном notebook_id
