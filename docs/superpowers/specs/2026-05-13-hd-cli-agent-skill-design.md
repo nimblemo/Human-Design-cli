@@ -1,63 +1,31 @@
-# Дизайн-спецификация: Agent Skill для `hd-cli`
+# Спецификация: создание Agent Skill `hd-cli`
 
 Дата: 2026-05-13  
 Репозиторий: `nimblemo/Human-Design-cli`  
-Цель: добавить Agent Skill в этот же репозиторий, который (1) скачивает и кэширует последний релиз бинарника `hd-cli` под платформу клиента и (2) даёт агентам удобный интерфейс запуска CLI в structured и raw режимах, (3) ведёт персистентное хранилище расчётов/диалогов и (4) делает контекстный инжект данных карт при запросах в NotebookLM через `notebooklm-cli`.
+Статус: draft (для реализации)  
 
-## 1. Область и допущения
+Цель: описать, что именно должно быть создано в репозитории, чтобы появился Agent Skill, который:
+1) устанавливает `hd-cli` (скачивает latest release для платформы клиента и кэширует локально, с fallback на сборку из исходников),
+2) предоставляет агентам интерфейс запуска `hd-cli` (structured и raw),
+3) ведёт персистентное хранилище людей/карт/расчётов/диалогов в виде Markdown-каталогов внутри директории скилла,
+4) интегрируется с NotebookLM через `notebooklm-cli` и инжектит compact-данные карт в каждый запрос (без NotebookLM sources).
+
+## 1. Область и принципы
 
 ### 1.1. Что делаем
-- Публикуем релиз-ассеты `hd-cli` в GitHub Releases репозитория `nimblemo/Human-Design-cli` для Linux/macOS/Windows x86_64.
-- Добавляем Skill в этот же репозиторий (путь: `skills/hd-cli/`) со следующими возможностями:
-  - Установка: определить ОС/архитектуру, скачать “latest release” ассет, проверить контрольную сумму (если доступна), положить в кэш.
-  - Запуск: дать агентам две модели использования:
-    - structured: задать поля (`date/time/utc/lang/...`) и вернуть структурированный результат (по умолчанию JSON).
-    - raw: проксировать произвольные аргументы в бинарник и вернуть stdout/stderr.
-  - Fallback при невозможности скачать релиз: сообщить пользователю причину и предложить локальную установку из репозитория (сборка через cargo).
-  - Диалоги: при создании нового диалога и прикреплении 1+ людей автоматически создавать артефакт расчёта (hd-cli → compact chart без описаний), а затем использовать эти данные для инжекта контекста в NotebookLM запросы.
+- Добавляем скилл внутрь этого репозитория по пути `skills/hd-cli/`.
+- Добавляем персистентное состояние в `skills/hd-cli/.state/` по паттерну Context State / Session Cache / Scratchpad File.
+- Добавляем скрипты установки `hd-cli` из GitHub Releases (latest) и fallback-установки из исходников.
+- Добавляем правила работы с `notebooklm-cli` в строгом соответствии с ограничениями `nlm-cli-skill` (см. ссылку ниже).
 
 ### 1.2. Что не делаем
-- Не публикуем в PATH глобально (по умолчанию) и не меняем системную конфигурацию клиента.
-- Не храним секреты и токены в репозитории/логах.
-- Не пытаемся обойти ограничения доступа к GitHub; при 403/404/timeout корректно сообщаем и предлагаем локальную установку.
+- Не используем NotebookLM sources для карт (ни создание, ни обновление).
+- Не храним никакие секреты/токены в репозитории или в `.state/`.
+- Не используем интерактивные режимы `notebooklm-cli` (например `nlm chat start`).
 
-## 2. Требования к релизам `nimblemo/Human-Design-cli`
+## 2. Артефакты, которые должны появиться в репозитории
 
-### 2.1. Триггеры релиза
-- Релиз создаётся при push тега вида `vX.Y.Z`.
-- Версия бинарника должна соответствовать тэгу.
-
-### 2.2. Матрица сборки
-- linux-x86_64 (GNU)
-- darwin-x86_64
-- windows-x86_64
-
-### 2.3. Имена ассетов (контракт)
-Установщик в Skill рассчитывает имя ассета детерминированно, поэтому имена должны быть стабильны.
-
-- Linux: `hd-cli-v{version}-linux-x86_64.tar.gz`
-- macOS: `hd-cli-v{version}-darwin-x86_64.tar.gz`
-- Windows: `hd-cli-v{version}-windows-x86_64.zip`
-- Контрольные суммы: `SHA256SUMS`
-
-### 2.4. Содержимое архивов
-- Linux/macOS tar.gz содержит исполняемый файл `hd-cli`
-- Windows zip содержит `hd-cli.exe`
-
-### 2.5. Контроль целостности
-- `SHA256SUMS` содержит строки формата:
-  - `<sha256>  <asset-filename>`
-- Установщик:
-  - Если файл `SHA256SUMS` найден в релизе — сверяет sha256 скачанного ассета.
-  - Если отсутствует — продолжает без проверки, но сообщает пользователю, что верификация недоступна.
-
-## 3. Структура скилла в репозитории
-
-### 3.1. Расположение
-Скилл размещается в этом же репозитории `nimblemo/Human-Design-cli`:
-- `skills/hd-cli/`
-
-### 3.2. Дерево файлов
+### 2.1. Файловая структура
 ```
 Human-Design-cli/
   skills/
@@ -66,242 +34,368 @@ Human-Design-cli/
       .state/
         index.md
         calculations/
-          <calc-id>.md
         people/
-          <person-id>/
-            person.md
-            charts/
-              <chart-id>.md
         dialogs/
-          <dialog-id>/
-            dialog.md
-            scratchpad.md
-            artifacts/
-              <artifact-id>.md
       scripts/
-        install.sh
-        install.ps1
-        github_release.py
+        install.py
         platform.py
-        run.py
+        github_release.py
+        hd_cli_run.py
+        hd_compact.py
+        state_io.py
+        nlm_query.py
       templates/
-        error_download.md
-        local_install.md
+        person.md
+        chart.md
+        calculation.md
+        dialog.md
+        scratchpad.md
+        artifact.calc.md
+        artifact.notebooklm_query.md
+        error.download_release.md
+        error.local_install.md
 ```
 
-### 3.3. Путь установки/кэширование
-- Cache root: `~/.cache/hd-cli/`
-- Layout:
-  - `~/.cache/hd-cli/{version}/hd-cli` (Linux/macOS)
-  - `~/.cache/hd-cli/{version}/hd-cli.exe` (Windows)
-- Симлинк/алиас на текущую версию:
-  - `~/.cache/hd-cli/current/hd-cli[.exe]` (копия или симлинк, зависит от платформы)
+### 2.2. Контракт `SKILL.md`
+`skills/hd-cli/SKILL.md` должен описывать:
+- назначение скилла и ограничения безопасности,
+- интерфейсы/интенты (какие действия скилл выполняет для агента),
+- расположение state и правила изменения файлов,
+- правила взаимодействия с `hd-cli` и `nlm`.
 
-### 3.4. Персистентное хранение: структурированные каталоги Markdown + Context State (Session Cache)
-Требование: хранить данные персистентно локально в директории скилла в виде структурированных каталогов и Markdown-файлов. Для служебного состояния использовать паттерн “Context State / Session Cache / Scratchpad File”.
+Минимальный каркас (текст для `SKILL.md`, который нужно создать/поддерживать):
+```
+# hd-cli (Agent Skill)
 
-- Local state root: `<repo_root>/skills/hd-cli/.state/`
-- Формат сущностей: Markdown с YAML frontmatter (метаданные) + секции контента.
-- Один диалог = один каталог `dialogs/<dialog-id>/`, где:
-  - `dialog.md` — “источник истины” (участники, ссылки на артефакты, базовые метаданные).
-  - `scratchpad.md` — файл кэша контекста (Session Cache), который обновляется агентом по ходу работы и хранит короткое рабочее состояние (например: `conversation_id`, ссылки на последний calc-артефакт на участника, last_error, временные заметки для последующих шагов).
+## Назначение
+- Рассчитывать Human Design chart через hd-cli.
+- Вести локальное персистентное хранилище людей/карт/расчётов/диалогов.
+- Делать запросы в NotebookLM через notebooklm-cli с инжектом JSON карт в каждый запрос.
 
-Индексы/каталоги:
-- `index.md` — обзор хранилища и быстрые ссылки (люди/последние диалоги/последние расчёты).
-- `calculations/<calc-id>.md` — запись одного расчёта (append-only концептуально; правки допустимы только для исправления метаданных).
-- `people/<person-id>/person.md` — сущность “человек”.
-- `people/<person-id>/charts/<chart-id>.md` — сохранённая “карта” (compact-версия без описательных полей).
-- `dialogs/<dialog-id>/artifacts/<artifact-id>.md` — артефакт диалога: вопрос пользователя + прикреплённые данные карт + ответ NotebookLM.
+## Важные ограничения
+- Не создавать и не обновлять NotebookLM sources.
+- Не использовать интерактивный режим notebooklm-cli (nlm chat start).
+- Не писать секреты/токены в файлы и логи.
 
-Рекомендованная структура YAML frontmatter (общая):
-- `id`
-- `created_at`
-- `updated_at`
-- `type` (person|chart|dialog|artifact|calculation|index|mapping)
+## Локальное состояние
+- State root: skills/hd-cli/.state/
+- Все сущности хранятся как Markdown + YAML frontmatter.
+- Для каждого диалога есть scratchpad.md (Session Cache), который можно обновлять часто.
 
-Рекомендованные секции Markdown:
-- `## Data` — данные сущности
-- `## Links` — ссылки на другие сущности
-- `## Notes` — заметки/интерпретации (если нужны)
+## Основные действия (интенты)
+1) Установка hd-cli:
+   - Попробовать скачать latest release под текущую платформу и закэшировать.
+   - Если релиза нет/недоступен/нет ассета — объяснить причину и предложить установку из исходников.
 
-### 3.5. Вложение JSON в Markdown
-Требование: “данные карт пользователей … без текстовых описаний” должны прикрепляться к запросам и сохраняться в артефактах. При этом формат хранения — Markdown.
+2) Управление людьми:
+   - Создать/обновить person сущность (birth_date, birth_time, utc_offset, lang).
 
-Правило:
-- JSON “compact chart” хранить внутри Markdown в fenced-блоке:
-  - ```json
-    { ... }
-    ```
-- Ключевые метаданные вынести в frontmatter (id, ссылки, timestamps), сам JSON оставить в секции `## Data`.
+3) Расчёт карты:
+   - Запустить hd-cli в формате json.
+   - Полученный JSON преобразовать в compact chart (без описательных полей) и сохранить как chart + calculation.
 
+4) Управление диалогами:
+   - Создать диалог с 1+ участниками.
+   - Сразу создать calc-артефакт для каждого участника (или единый артефакт на диалог, см. спецификацию).
+   - При вопросе пользователя сформировать request_text с инжектом chart_compact и вызвать:
+     nlm notebook query <notebook_id> "<request_text>"
+   - Сохранить artifact.notebooklm_query.md и обновить scratchpad.md.
+```
 
-## 4. Установщик: алгоритм
+## 3. Персистентное хранилище (`.state/`) и схемы сущностей
 
-### 4.1. Определение платформы
-- OS: linux | darwin | windows
-- arch: x86_64
-- Platform key: `{os}-{arch}`
+### 3.1. Общие правила
+- Все сущности: Markdown + YAML frontmatter + секции.
+- `id` в frontmatter обязателен.
+- Время хранить как ISO-8601 (например `2026-05-13T10:15:30Z`).
+- JSON данных карты хранить только в fenced-блоке `json` внутри секции `## Data`.
 
-### 4.2. Получение latest release
-Источник: GitHub API:
-- `GET https://api.github.com/repos/nimblemo/Human-Design-cli/releases/latest`
+### 3.2. Дерево `.state/`
+```
+skills/hd-cli/.state/
+  index.md
+  people/
+    <person-id>/
+      person.md
+      charts/
+        <chart-id>.md
+  calculations/
+    <calc-id>.md
+  dialogs/
+    <dialog-id>/
+      dialog.md
+      scratchpad.md
+      artifacts/
+        <artifact-id>.md
+```
 
-Логика:
-- Если 200: распарсить `tag_name`, список `assets[]`, найти ассет по имени.
-- Если 404: релизов нет → fallback (локальная установка).
-- Если 403/401: нет доступа/лимиты → fallback (локальная установка).
-- Если сеть недоступна/timeout: fallback (локальная установка).
+### 3.3. Шаблоны Markdown (обязательный минимум)
 
-### 4.3. Скачивание ассета
-- Скачать `browser_download_url` ассета в временный файл.
-- (Опционально) скачать `SHA256SUMS` и проверить sha256.
-- Распаковать в `{cache_root}/{version}/`.
-- Выставить executable bit (Linux/macOS).
-- Обновить `current/`.
+#### Person: `people/<person-id>/person.md`
+```
+---
+id: <person-id>
+type: person
+created_at: <iso8601>
+updated_at: <iso8601>
+display_name: <string>
+birth_date: YYYY-MM-DD
+birth_time: HH:MM
+utc_offset: <number>
+lang: ru
+current_chart_id: <chart-id-or-empty>
+chart_ids: []
+---
 
-### 4.4. Поведение при ошибках
-Если релиз нельзя скачать или ассет не найден:
-- Вернуть понятную ошибку:
-  - причина (нет релиза / нет доступа / нет ассета под платформу / сеть)
-  - следующий шаг: “локальная установка”
-- Предложить пользователю одну из команд:
-  - `git clone https://github.com/nimblemo/Human-Design-cli`
-  - `cargo build --release` или `cargo install --path .`
-- Если пользователь запускает скилл повторно с флагом вроде `--from-source <path>` (опционально в реализации), скилл может собрать бинарник из указанного пути.
+## Notes
+```
 
-## 5. Интерфейс Skill для агентов
+#### Chart: `people/<person-id>/charts/<chart-id>.md`
+```
+---
+id: <chart-id>
+type: chart
+created_at: <iso8601>
+updated_at: <iso8601>
+person_id: <person-id>
+calc_id: <calc-id>
+hd_cli_version: <string>
+compact: true
+---
 
-### 5.1. Поддерживаемые режимы
-- `structured` режим:
-  - Вход: поля даты/времени/UTC/языка и флаги (`short`, `format`).
-  - Исполнение: вызвать установленный бинарник `hd-cli` с `--format json` (по умолчанию).
-  - Выход: вернуть JSON (stdout) и нормализованный статус.
-- `raw` режим:
-  - Вход: строка аргументов, которые нужно передать `hd-cli` как есть.
-  - Выход: stdout/stderr + exit code.
+## Data
 
-### 5.2. Сигнатура аргументов (proposal)
-- `--mode structured|raw` (default: structured)
+```json
+{ }
+```
+```
+
+#### Calculation: `calculations/<calc-id>.md`
+```
+---
+id: <calc-id>
+type: calculation
+created_at: <iso8601>
+updated_at: <iso8601>
+person_id: <person-id>
+chart_id: <chart-id>
+hd_cli_version: <string>
+input:
+  birth_date: YYYY-MM-DD
+  birth_time: HH:MM
+  utc_offset: <number>
+  lang: ru
+---
+
+## Links
+- person: ../people/<person-id>/person.md
+- chart: ../people/<person-id>/charts/<chart-id>.md
+```
+
+#### Dialog: `dialogs/<dialog-id>/dialog.md`
+```
+---
+id: <dialog-id>
+type: dialog
+created_at: <iso8601>
+updated_at: <iso8601>
+title: <string>
+notebook_id: c5dd30c7-da41-49a5-a0ce-74ed7ad7ce1b
+participant_person_ids: []
+artifact_ids: []
+---
+
+## Notes
+```
+
+#### Scratchpad (Session Cache): `dialogs/<dialog-id>/scratchpad.md`
+```
+---
+id: <dialog-id>
+type: scratchpad
+updated_at: <iso8601>
+notebook_id: c5dd30c7-da41-49a5-a0ce-74ed7ad7ce1b
+conversation_id: <string-or-empty>
+last_error: <string-or-empty>
+attached:
+  <person-id>:
+    chart_id: <chart-id-or-empty>
+    calc_artifact_id: <artifact-id-or-empty>
+---
+
+## Working Notes
+```
+
+#### Artifact: `dialogs/<dialog-id>/artifacts/<artifact-id>.md`
+Frontmatter общий:
+```
+---
+id: <artifact-id>
+type: artifact
+kind: calc | notebooklm_query
+created_at: <iso8601>
+dialog_id: <dialog-id>
+attached_people:
+  - person_id: <person-id>
+    chart_id: <chart-id>
+---
+```
+
+Для `kind=calc`:
+```
+## Calculation
+person_id: <person-id>
+chart_id: <chart-id>
+
+## Data
+
+```json
+{ }
+```
+```
+
+Для `kind=notebooklm_query`:
+```
+## User Query
+<text>
+
+## Request Text
+<full request_text that was sent to nlm>
+
+## Response Text
+<nlm response>
+```
+
+## 4. Интеграция с `hd-cli`
+
+### 4.1. Базовый вызов CLI
+Нативные флаги `hd-cli` берутся из [cli.rs](file:///workspace/src/cli.rs#L37-L75).
+
+Нормализованный вызов для расчёта карты:
+- `hd-cli --date YYYY-MM-DD --time HH:MM --utc +3 --format json --lang ru`
+
+### 4.2. Structured и raw режимы внутри скилла
 - Structured:
-  - `--date YYYY-MM-DD`
-  - `--time HH:MM`
-  - `--utc +3|-5|+5.5`
-  - `--lang ru|en|es` (default: ru)
-  - `--short`
-  - `--format json|yaml|table` (default: json)
+  - скилл принимает параметры (date/time/utc/lang/short/format) и собирает корректный argv для `hd-cli`;
+  - для интеграционных сценариев с NotebookLM всегда получать JSON.
 - Raw:
-  - `--args "<raw args>"`
+  - скилл принимает строку аргументов и проксирует их в `hd-cli` как есть;
+  - raw режим не должен записывать сущности в `.state/` автоматически (только если пользователь явно попросил).
 
-### 5.3. Контракты вывода
-- structured:
-  - если exit code != 0: вернуть ошибку + stderr
-  - если `--format json`: попытаться распарсить JSON; при невалидном JSON — вернуть raw stdout + ошибку парсинга
-- raw:
-  - всегда вернуть `exit_code`, `stdout`, `stderr`
+### 4.3. Compact chart (строго без описаний)
+Источник данных: JSON вывод `hd-cli --format json` (модель [HdChart](file:///workspace/src/models.rs#L55-L99)).
 
-### 5.4. Данные карт без текстовых описаний (compact chart)
-Требование: при прикреплении данных карт к NotebookLM не включать текстовые описания из расчётов.
-
-Источник данных: JSON вывод `hd-cli --format json` (см. модель [HdChart](file:///workspace/src/models.rs#L54-L99)).
+Требование: при использовании в NotebookLM и при сохранении в chart/calculation не включать текстовые описания.
 
 Правило “compact”:
-- Сохранять только структурные поля и идентификаторы.
-- Удалять/не сохранять следующие поля (если присутствуют):
-  - `*_description` (например, `type_description`, `profile_description`, `authority_description`, `strategy_description`, `cross_description`)
+- удалять/не сохранять:
+  - `type_description`, `profile_description`, `authority_description`, `strategy_description`, `cross_description`
   - `personality[].gate_name`, `personality[].gate_description`, `personality[].line_description`
   - `design[].gate_name`, `design[].gate_description`, `design[].line_description`
   - `channels[].description`
   - `centers[].behavior_normal`, `centers[].behavior_distorted`
-  - любые `InfoItem.description` и подобные блоки, если они добавляются в JSON
+  - `business|motivation|environment|diet|fear|sexuality|love|vision` (если эти блоки содержат описательные поля)
+  - `circuit_scores` (содержит много описательного текста)
 
-Хранимый JSON “compact chart” должен включать (минимум):
+Хранимый минимум:
 - `birth_date`, `birth_time`, `utc_offset`
-- `type`, `profile`, `authority`, `strategy`, `incarnation_cross`
+- `type`/`profile`/`authority`/`strategy`/`incarnation_cross`
 - `personality[]`: `planet`, `index`, `longitude`, `degree`, `zodiac_sign`, `gate`, `line`, `color`, `tone`, `base`
 - `design[]`: то же
 - `channels[]`: `key`, `name`
 - `centers[]`: `name`, `defined`
 
-## 6. Интеграция с NotebookLM через `notebooklm-cli`
+## 5. Интеграция с NotebookLM через `notebooklm-cli`
 
-### 6.1. Зависимость от `nlm-cli-skill`
-Требование: система зависит от скилла `nlm-cli-skill` и использует его правила/ограничения.
+### 5.1. Жёсткие правила `nlm-cli-skill`
+Скилл обязан следовать правилам `nlm-cli-skill`:
+- перед запросами проверять `nlm login --check`, иначе просить пользователя выполнить `nlm login`;
+- не использовать интерактивные команды;
+- использовать только `nlm notebook query`.
 
-Источник: [nlm-cli-skill/SKILL.md](https://raw.githubusercontent.com/jacob-bd/notebooklm-cli/main/nlm-cli-skill/SKILL.md)
+Источник правил: https://raw.githubusercontent.com/jacob-bd/notebooklm-cli/main/nlm-cli-skill/SKILL.md
 
-Ключевые правила интеграции:
-- Перед любыми операциями проверять аутентификацию (`nlm login --check`), иначе просить пользователя выполнить `nlm login`.
-- Не использовать `nlm chat start` (интерактивный REPL). Только `nlm notebook query`.
-- Все запросы выполняются в фиксированном NotebookLM ноутбуке:
-  - `notebook_id = c5dd30c7-da41-49a5-a0ce-74ed7ad7ce1b`
-  - URL: `https://notebooklm.google.com/notebook/c5dd30c7-da41-49a5-a0ce-74ed7ad7ce1b`
+### 5.2. Фиксированный notebook
+- `notebook_id = c5dd30c7-da41-49a5-a0ce-74ed7ad7ce1b`
+- URL: `https://notebooklm.google.com/notebook/c5dd30c7-da41-49a5-a0ce-74ed7ad7ce1b`
 
-### 6.2. Инжект контекста карт в запросы NotebookLM (без sources)
-Выбранная стратегия: не создавать/обновлять NotebookLM sources для карт. Вместо этого данные карт (compact) инжектятся прямо в текст каждого запроса `nlm notebook query` в виде JSON-блоков.
+### 5.3. Инжект данных карт в каждый запрос (без sources)
+Выбранная стратегия:
+- не создавать и не обновлять sources;
+- в каждый запрос добавлять JSON-блок(и) `chart_compact`.
 
-Формат request_text (proposal):
-1) Заголовок с перечислением участников
-2) Один JSON-блок на участника (compact chart)
-3) Текст вопроса пользователя
+Формат `request_text`:
+1) `Participants: <person-id-1>, <person-id-2>, ...`
+2) Для каждого участника:
+   - `Chart(<person-id>):`
+   - fenced `json` block с compact chart
+3) `User question: <text>`
 
-Пример структуры:
-- `Participants: <person-id-1>, <person-id-2>`
-- `Chart(<person-id-1>):` + fenced `json` block
-- `Chart(<person-id-2>):` + fenced `json` block
-- `User question: ...`
+## 6. Основные сценарии (обязательное поведение скилла)
 
-### 6.3. Диалоги и артефакты (локально)
-Сущности:
-- Person:
-  - `id`, `display_name`, (опционально) заметки
-  - список связанных `chart_id` (история)
-- Calculation (Markdown):
-  - `calc-id`, `person_id`, входные параметры (`date/time/utc/lang`), `chart_id`, `hd_cli_version`, `created_at`
-- Dialog:
-  - `id`, `title`, `participant_person_ids[]`, `notebook_id` (фиксированный), `conversation_id` (если используется для follow-up), `artifact_ids[]`
-- Artifact:
-  - `id`, `dialog_id`, `created_at`
-  - `kind`: `calc` | `notebooklm_query`
-  - `attached_people[]`: массив `{ person_id, chart_id, chart_compact }`
-  - Для `kind=calc`: параметры расчёта + результат `chart_compact`
-  - Для `kind=notebooklm_query`: `{ user_query, notebook_id, conversation_id?, request_text, response_text, status }`
+### 6.1. Создать человека
+Результат:
+- создаётся `people/<person-id>/person.md`.
 
-Поведение:
-- При создании нового диалога с 1+ участниками:
-  1) Выполнить расчёт `hd-cli` для каждого участника (по его birth data) и получить JSON.
-  2) Преобразовать JSON в `chart_compact` (см. раздел 5.4).
-  3) Создать артефакт `kind=calc` в `dialogs/<dialog-id>/artifacts/` (для каждого участника или одним файлом на диалог; в реализации выбрать один вариант и зафиксировать в skill интерфейсе).
-  4) Обновить `dialogs/<dialog-id>/scratchpad.md` (минимум: `conversation_id` если есть, ссылки на последний calc-артефакт на участника, last_error).
+### 6.2. Создать диалог с участниками
+Если при создании диалога прикреплено 1+ людей, скилл обязан:
+1) рассчитать карты для каждого участника через `hd-cli` (JSON),
+2) преобразовать каждую карту в compact,
+3) сохранить `chart.md` и `calculation.md`,
+4) создать calc-артефакт(ы) в `dialogs/<dialog-id>/artifacts/`,
+5) обновить `scratchpad.md` ссылками на актуальные calc-артефакты/карты.
 
-- При новом вопросе пользователя в рамках диалога:
-  0) Обновлять `dialogs/<dialog-id>/scratchpad.md` как Session Cache (минимум: `conversation_id`, ссылки на актуальные calc-артефакты, last_error).
-  1) Собрать `request_text` с инжектом `chart_compact` для всех участников (см. 6.2).
-  2) Выполнить `nlm notebook query <notebook-id> "<request_text>"`:
-     - Если у диалога уже есть `conversation_id` — передать его флагом `--conversation-id`.
-     - Если `conversation_id` ещё нет — сохранить `conversation_id` из ответа (если CLI его возвращает), чтобы продолжать контекстно.
-  3) Сохранить артефакт `kind=notebooklm_query` локально, включая:
-     - исходный `user_query`
-     - сформированный `request_text` (с injected context)
-     - `response_text`
-     - снимок `chart_compact` для каждого участника (чтобы артефакт был самодостаточным).
+Контракт: calc-артефакты должны быть готовы до первого вопроса пользователя, чтобы не делать “скрытый расчёт” в момент запроса к NotebookLM.
 
-## 7. Безопасность и приватность
-- Не логировать токены/credential’ы.
-- При запросах к GitHub API использовать публичный доступ без токена; если пользователь настроил токен локально — допустимо поддержать через env var, но не требовать.
-- Не записывать скачанные файлы вне cache root.
+### 6.3. Задать вопрос в диалоге (NotebookLM)
+Скилл обязан:
+1) собрать `request_text` с инжектом актуальных `chart_compact`,
+2) выполнить `nlm notebook query`,
+3) сохранить `artifact kind=notebooklm_query` с:
+   - user_query
+   - request_text
+   - response_text
+   - attached_people (person_id + chart_id)
+4) обновить `scratchpad.md` (включая `conversation_id`, если он используется/возвращается).
 
-## 8. Критерии приемки
-- При наличии GitHub Release с ассетом под платформу:
-  - Skill скачивает latest release, кладёт в кэш, запускает `hd-cli`, возвращает результат.
-- При отсутствии релизов или недоступности GitHub API:
-  - Skill сообщает причину и предлагает локальную установку из `nimblemo/Human-Design-cli`.
-- Поддержаны оба режима (structured + raw).
-- Персистентно сохраняются:
-  - список расчётов (Markdown файлы в `.state/calculations/`)
-  - люди/карты (Markdown каталоги в `.state/people/`)
-  - диалоги и артефакты (Markdown каталоги в `.state/dialogs/`)
-  - context cache (Session Cache) в `dialogs/<dialog-id>/scratchpad.md`
-- NotebookLM интеграция:
-  - при создании диалога автоматически создаётся calc-артефакт с `chart_compact` на всех участников
-  - при каждом вопросе пользователя формируется `request_text` с injected `chart_compact` и выполняется `nlm notebook query` в указанном notebook_id
-- Нет секретов в логах/файлах.
+## 7. Установка `hd-cli` (latest release + fallback)
+
+### 7.1. Платформа
+- OS: linux | darwin | windows
+- arch: x86_64
+- platform key: `{os}-{arch}`
+
+### 7.2. GitHub Releases (latest)
+Источник: `GET https://api.github.com/repos/nimblemo/Human-Design-cli/releases/latest`
+
+### 7.3. Контракт имён ассетов
+- Linux: `hd-cli-v{version}-linux-x86_64.tar.gz`
+- macOS: `hd-cli-v{version}-darwin-x86_64.tar.gz`
+- Windows: `hd-cli-v{version}-windows-x86_64.zip`
+- Контрольные суммы (если есть): `SHA256SUMS`
+
+### 7.4. Кэш бинарника
+- Cache root: `~/.cache/hd-cli/`
+- Layout:
+  - `~/.cache/hd-cli/{version}/hd-cli` (Linux/macOS)
+  - `~/.cache/hd-cli/{version}/hd-cli.exe` (Windows)
+- `~/.cache/hd-cli/current/hd-cli[.exe]` как активная версия (симлинк или копия).
+
+### 7.5. Fallback на локальную установку из исходников
+Если релизов нет/недоступен GitHub/нет ассета под платформу:
+- скилл объясняет причину,
+- предлагает шаги:
+  - `git clone https://github.com/nimblemo/Human-Design-cli`
+  - `cargo build --release` или `cargo install --path .`
+
+## 8. Безопасность
+- не логировать токены/credential’ы,
+- не сохранять NotebookLM ответы или injected JSON в публичные места вне `.state/`,
+- не выполнять сетевые запросы с токенами, кроме тех, что уже настроены у пользователя локально.
+
+## 9. Критерии приемки (чеклист)
+- Скилл размещён в `skills/hd-cli/` и содержит `SKILL.md`.
+- Скрипты установки поддерживают “latest release” и корректный fallback на “из исходников”.
+- В `.state/` создаются/обновляются сущности `person/chart/calculation/dialog/artifact` и `scratchpad.md`.
+- При создании диалога с участниками создаются calc-артефакты (до первого вопроса).
+- Каждый запрос в NotebookLM выполняется через `nlm notebook query` и содержит injected `chart_compact` (без sources).
